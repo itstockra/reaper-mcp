@@ -101,7 +101,10 @@ export type CommandType =
   | 'send_midi_pc'
   | 'send_midi_note'
   // Semantic audio analysis (requires Python sidecar)
-  | 'render_track_to_wav';
+  | 'render_track_to_wav'
+  // Rendering & bounce (headless — no render dialog, no human interaction)
+  | 'render_tracks_to_files'
+  | 'render_master_to_file';
 
 // --- Per-command param types ---
 
@@ -547,4 +550,22 @@ export interface RenderTrackToWavParams {
   startTime: number;   // seconds from project start
   endTime: number;     // seconds from project start
   commandId: string;   // used to generate a unique temp filename
+}
+
+// --- Rendering & bounce param types ---
+
+export interface RenderTracksToFilesParams {
+  outputDir: string;        // absolute directory to write rendered files into (created if missing)
+  trackIndices?: number[];  // zero-based track indices; default: all tracks
+  startTime?: number;       // seconds from project start; default 0
+  endTime?: number;         // seconds from project start; default: project length
+  sampleRate?: number;      // default: project sample rate, falls back to 44100
+}
+
+export interface RenderMasterToFileParams {
+  outputDir: string;   // absolute directory to write the render into (created if missing)
+  fileName?: string;   // default 'Master.wav'
+  startTime?: number;  // seconds from project start; default 0
+  endTime?: number;    // seconds from project start; default: project length
+  sampleRate?: number; // default: project sample rate, falls back to 44100
 }

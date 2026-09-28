@@ -66,6 +66,7 @@ reaper-mcp/
         tempo.ts              # get_tempo_map
         envelopes.ts          # get_track_envelopes, get_envelope_points, insert_envelope_point, delete_envelope_point
         aesthetics.ts         # analyze_track_aesthetics (requires Python sidecar)
+        render.ts             # render_tracks_to_files, render_master_to_file (headless bounce)
 
     sidecar/                  # Python sidecar for semantic audio analysis (opt-in)
       server.py               # JSON-RPC server (Meta Audiobox Aesthetics, CC-BY 4.0)
@@ -145,7 +146,7 @@ The `knowledge/` directory and `apps/reaper-mix-agent/` are tightly coupled:
 | `@mthines/reaper-mix-agent` | `apps/reaper-mix-agent` | `@nx/esbuild` (ESM bundle) | AI mix engineer agent (loads `knowledge/`) |
 | `@reaper-mcp/protocol` | `libs/protocol` | `@nx/js:tsc` | Shared command/response types |
 
-## MCP Tools (84 total)
+## MCP Tools (86 total)
 
 ### Project & Tracks (5)
 
@@ -303,6 +304,15 @@ The `knowledge/` directory and `apps/reaper-mix-agent/` are tightly coupled:
 |------|------|-------------|
 | `analyze_track_aesthetics` | `tools/aesthetics.ts` | Perceptual quality scores via Meta Audiobox Aesthetics (CC-BY 4.0): Production Quality, Production Complexity, Content Enjoyment, Content Usefulness (all 0-10). Bounces track to temp WAV, calls Python sidecar. Requires `setup-sidecar`. |
 
+### Rendering & Bounce (2)
+
+| Tool | File | Description |
+|------|------|-------------|
+| `render_tracks_to_files` | `tools/render.ts` | Render one or more tracks as individual stem WAV files (each track soloed in turn, bounced post-FX/post-fader to `outputDir/<TrackName>.wav`). Headless — no render dialog. Defaults to all tracks and the full project length. |
+| `render_master_to_file` | `tools/render.ts` | Render the full master mix (all tracks, ignoring current solo state) to a single WAV file, e.g. `outputDir/Master.wav`. Headless — no render dialog. Defaults to the full project length. |
+
+Both tools trigger REAPER action `42230` ("Render project, using the most recent render settings, auto-close render dialog") — the same dialog-free mechanism `render_track_to_wav` already used internally for `analyze_track_aesthetics`. Render settings and all track solo states are saved before rendering and restored after, even on failure.
+
 ### Progressive Discovery (3)
 
 | Tool | File | Description |
@@ -311,7 +321,7 @@ The `knowledge/` directory and `apps/reaper-mix-agent/` are tightly coupled:
 | `enable_tool_category` | `tools/categories.ts` | Get full tool list for a category; signals intent to use that category |
 | `disable_tool_category` | `tools/categories.ts` | Semantic context-budget hint that a category is no longer needed |
 
-Categories: `project`, `tracks`, `fx`, `transport`, `midi`, `media`, `selection`, `markers`, `tempo`, `envelopes`, `analysis`, `discovery`, `snapshots`, `routing`
+Categories: `project`, `tracks`, `fx`, `transport`, `midi`, `media`, `selection`, `markers`, `tempo`, `envelopes`, `analysis`, `discovery`, `snapshots`, `routing`, `render`
 
 ### MIDI Editing Concepts
 

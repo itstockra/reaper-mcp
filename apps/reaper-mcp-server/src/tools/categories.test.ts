@@ -31,7 +31,7 @@ describe('category tools', () => {
       const expectedCategories = [
         'project', 'tracks', 'fx', 'transport', 'midi', 'media',
         'selection', 'markers', 'tempo', 'envelopes', 'analysis',
-        'discovery', 'snapshots', 'routing',
+        'discovery', 'snapshots', 'routing', 'render',
       ];
       for (const cat of expectedCategories) {
         expect(TOOL_CATEGORIES[cat]).toBeDefined();
@@ -43,6 +43,11 @@ describe('category tools', () => {
 
     it('includes composite batch tools in tracks category', () => {
       expect(TOOL_CATEGORIES['tracks'].tools).toContain('set_multiple_track_properties');
+    });
+
+    it('includes both render tools in the render category', () => {
+      expect(TOOL_CATEGORIES['render'].tools).toContain('render_tracks_to_files');
+      expect(TOOL_CATEGORIES['render'].tools).toContain('render_master_to_file');
     });
 
     it('includes composite batch tools in fx category', () => {

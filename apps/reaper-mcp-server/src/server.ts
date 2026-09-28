@@ -20,6 +20,7 @@ import { registerEnvelopeTools } from './tools/envelopes.js';
 import { registerBatchTools } from './tools/batch.js';
 import { registerCategoryTools } from './tools/categories.js';
 import { registerAestheticsTools } from './tools/aesthetics.js';
+import { registerRenderTools } from './tools/render.js';
 
 /**
  * Wraps server.tool() so every tool callback runs inside a SERVER span.
@@ -97,6 +98,7 @@ export function createServer(): McpServer {
   registerBatchTools(server);
   registerCategoryTools(server);
   registerAestheticsTools(server);
+  registerRenderTools(server);
 
   return server;
 }

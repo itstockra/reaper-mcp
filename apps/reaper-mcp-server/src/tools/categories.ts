@@ -103,12 +103,17 @@ export const TOOL_CATEGORIES: Record<string, ToolCategory> = {
     description: 'Track routing: inspect sends, receives, parent/folder relationships for a track',
     tools: ['get_track_routing'],
   },
+  render: {
+    name: 'render',
+    description: 'Headless rendering/bounce to disk: render individual tracks as stem WAV files, or bounce the full master mix to a single file. No render dialog, no human interaction.',
+    tools: ['render_tracks_to_files', 'render_master_to_file'],
+  },
 };
 
 export function registerCategoryTools(server: McpServer): void {
   server.tool(
     'list_tool_categories',
-    'List all available tool categories with descriptions and tool names. Use this to discover what tools are available without loading all 72+ tool schemas. Categories: project, tracks, fx, transport, midi, media, selection, markers, tempo, envelopes, analysis, discovery, snapshots, routing.',
+    'List all available tool categories with descriptions and tool names. Use this to discover what tools are available without loading all 72+ tool schemas. Categories: project, tracks, fx, transport, midi, media, selection, markers, tempo, envelopes, analysis, discovery, snapshots, routing, render.',
     {},
     async () => {
       const categories = Object.values(TOOL_CATEGORIES).map((cat) => ({

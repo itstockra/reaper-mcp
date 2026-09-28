@@ -3802,6 +3802,266 @@ function handlers.render_track_to_wav(params)
 end
 
 -- =============================================================================
+-- Shared render-settings save/restore for headless (dialog-free) renders
+--
+-- Wraps `body(track_count)` with: save current render settings + solo states,
+-- apply common render bounds/format and clear all solos, run body (which sets
+-- file/pattern/solo/settings as needed and triggers the render via command
+-- 42230), then always restore settings + solo states — even if body errors.
+--
+-- Returns (ok, err) — mirrors pcall, does not raise.
+-- =============================================================================
+
+local function with_render_settings(sample_rate, start_time, end_time, body)
+  local saved_file     = ({reaper.GetSetProjectInfo_String(0, "RENDER_FILE",       "", false)})[2] or ""
+  local saved_pattern  = ({reaper.GetSetProjectInfo_String(0, "RENDER_PATTERN",    "", false)})[2] or ""
+  local saved_format   = ({reaper.GetSetProjectInfo_String(0, "RENDER_FORMAT",     "", false)})[2] or ""
+  local saved_bounds   = reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", 0, false)
+  local saved_settings = reaper.GetSetProjectInfo(0, "RENDER_SETTINGS",   0, false)
+  local saved_start    = reaper.GetSetProjectInfo(0, "RENDER_STARTPOS",   0, false)
+  local saved_end      = reaper.GetSetProjectInfo(0, "RENDER_ENDPOS",     0, false)
+  local saved_srate    = reaper.GetSetProjectInfo(0, "RENDER_SRATE",      0, false)
+  local saved_channels = reaper.GetSetProjectInfo(0, "RENDER_CHANNELS",   0, false)
+
+  local track_count = reaper.CountTracks(0)
+  local saved_solo_states = {}
+  for i = 0, track_count - 1 do
+    saved_solo_states[i] = reaper.GetMediaTrackInfo_Value(reaper.GetTrack(0, i), "I_SOLO")
+  end
+
+  reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", 0, true)
+  reaper.GetSetProjectInfo(0, "RENDER_STARTPOS", start_time, true)
+  reaper.GetSetProjectInfo(0, "RENDER_ENDPOS",   end_time,   true)
+  reaper.GetSetProjectInfo_String(0, "RENDER_FORMAT", "evaw", true)
+  reaper.GetSetProjectInfo(0, "RENDER_SRATE",    sample_rate, true)
+  reaper.GetSetProjectInfo(0, "RENDER_CHANNELS", 2,           true)
+  -- Unsolo everything up front — body() re-solos a specific track if it needs to.
+  for i = 0, track_count - 1 do
+    reaper.SetMediaTrackInfo_Value(reaper.GetTrack(0, i), "I_SOLO", 0)
+  end
+
+  local ok, err = pcall(body, track_count)
+
+  local restore_ok, restore_err = pcall(function()
+    reaper.GetSetProjectInfo_String(0, "RENDER_FILE",       saved_file,     true)
+    reaper.GetSetProjectInfo_String(0, "RENDER_PATTERN",    saved_pattern,  true)
+    reaper.GetSetProjectInfo_String(0, "RENDER_FORMAT",     saved_format,   true)
+    reaper.GetSetProjectInfo(0, "RENDER_BOUNDSFLAG", saved_bounds,   true)
+    reaper.GetSetProjectInfo(0, "RENDER_SETTINGS",   saved_settings, true)
+    reaper.GetSetProjectInfo(0, "RENDER_STARTPOS",   saved_start,    true)
+    reaper.GetSetProjectInfo(0, "RENDER_ENDPOS",     saved_end,      true)
+    reaper.GetSetProjectInfo(0, "RENDER_SRATE",      saved_srate,    true)
+    reaper.GetSetProjectInfo(0, "RENDER_CHANNELS",   saved_channels, true)
+    for i = 0, track_count - 1 do
+      reaper.SetMediaTrackInfo_Value(reaper.GetTrack(0, i), "I_SOLO", saved_solo_states[i] or 0)
+    end
+  end)
+
+  if not restore_ok then
+    reaper.ShowConsoleMsg("[reaper-mcp] Warning: failed to restore render settings: " .. tostring(restore_err) .. "\n")
+  end
+
+  return ok, err
+end
+
+local function sanitize_filename(name)
+  return (name:gsub("[^%w%-_%.%s]", "_"):gsub("%s+", "_"))
+end
+
+-- Resolves {startTime, endTime} params to concrete seconds, defaulting endTime
+-- to the full project length (last item/marker/region end) when omitted.
+local function default_render_bounds(params)
+  local start_time = params.startTime or 0
+  local end_time = params.endTime
+  if end_time == nil then
+    end_time = reaper.GetProjectLength(0)
+    if end_time <= start_time then
+      end_time = start_time + 1 -- guard against an empty/zero-length project
+    end
+  end
+  return start_time, end_time
+end
+
+local function default_sample_rate(params)
+  if params.sampleRate then return params.sampleRate end
+  local sr = reaper.GetSetProjectInfo(0, "PROJECT_SRATE", 0, false)
+  if sr and sr > 0 then return sr end
+  return 44100
+end
+
+local function ensure_output_dir(dir)
+  if dir:sub(-1) ~= "/" and dir:sub(-1) ~= "\\" then
+    dir = dir .. "/"
+  end
+  reaper.RecursiveCreateDirectory(dir, 0)
+  return dir
+end
+
+-- =============================================================================
+-- render_tracks_to_files handler
+--
+-- Renders one or more tracks as individual "stem" WAV files — each track is
+-- soloed in turn and the master output (post-FX, post-fader) is bounced to
+-- outputDir/<TrackName>.wav. Fully headless: no render dialog is shown, and
+-- no human interaction is required.
+--
+-- Params:
+--   outputDir     (string) — directory to write files into (created if missing)
+--   trackIndices  (array)  — zero-based track indices; default: all tracks
+--   startTime     (number) — seconds from project start; default 0
+--   endTime       (number) — seconds from project start; default: project length
+--   sampleRate    (number) — default: project sample rate, falls back to 44100
+--
+-- Returns:
+--   { outputDir, rendered: [{trackIndex, trackName, filePath}], failed: [{trackIndex, error}], startTime, endTime, sampleRate }
+-- =============================================================================
+
+function handlers.render_tracks_to_files(params)
+  if not params.outputDir or params.outputDir == "" then
+    return nil, "Missing required param: outputDir"
+  end
+
+  local track_count_all = reaper.CountTracks(0)
+  local indices
+  if params.trackIndices then
+    indices = json_decode_array(params.trackIndices)
+  end
+  if not indices or #indices == 0 then
+    indices = {}
+    for i = 0, track_count_all - 1 do indices[#indices + 1] = i end
+  end
+
+  local start_time, end_time = default_render_bounds(params)
+  if end_time <= start_time then
+    return nil, "endTime must be greater than startTime"
+  end
+  local sample_rate = default_sample_rate(params)
+  local output_dir = ensure_output_dir(params.outputDir)
+
+  local rendered = {}
+  local failed = {}
+  local used_names = {}
+
+  local ok, err = with_render_settings(sample_rate, start_time, end_time, function(track_count)
+    for _, raw_idx in ipairs(indices) do
+      local idx = math.floor(tonumber(raw_idx) or -1)
+      local track = (idx >= 0 and idx < track_count) and reaper.GetTrack(0, idx) or nil
+      if not track then
+        failed[#failed + 1] = { trackIndex = idx, error = "Track not found" }
+      else
+        local _, name = reaper.GetTrackName(track)
+        name = (name and name ~= "") and name or ("Track " .. (idx + 1))
+        local safe_name = sanitize_filename(name)
+        if used_names[safe_name] then
+          safe_name = safe_name .. "_" .. (idx + 1)
+        end
+        used_names[safe_name] = true
+
+        local file_path = output_dir .. safe_name .. ".wav"
+
+        reaper.GetSetProjectInfo_String(0, "RENDER_FILE",    output_dir, true)
+        reaper.GetSetProjectInfo_String(0, "RENDER_PATTERN", safe_name,  true)
+        -- 2 = render master output with only the target track soloed — the
+        -- same single-track-bounce technique render_track_to_wav uses.
+        reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", 2, true)
+
+        for i = 0, track_count - 1 do
+          reaper.SetMediaTrackInfo_Value(reaper.GetTrack(0, i), "I_SOLO", 0)
+        end
+        reaper.SetMediaTrackInfo_Value(track, "I_SOLO", 1)
+
+        -- Action 42230 = "Render project, using the most recent render
+        -- settings, auto-close render dialog" — synchronous, blocks ~0.5-1s.
+        reaper.Main_OnCommand(42230, 0)
+
+        local f = io.open(file_path, "rb")
+        if f then
+          f:close()
+          rendered[#rendered + 1] = { trackIndex = idx, trackName = name, filePath = file_path }
+        else
+          failed[#failed + 1] = { trackIndex = idx, error = "Render produced no output file at: " .. file_path }
+        end
+      end
+    end
+  end)
+
+  if not ok then
+    return nil, "Render failed: " .. tostring(err)
+  end
+
+  return {
+    outputDir  = output_dir,
+    rendered   = rendered,
+    failed     = failed,
+    startTime  = start_time,
+    endTime    = end_time,
+    sampleRate = sample_rate,
+  }
+end
+
+-- =============================================================================
+-- render_master_to_file handler
+--
+-- Renders the full master mix (all tracks, ignoring any current solo state)
+-- to a single WAV file. Fully headless: no render dialog is shown.
+--
+-- Params:
+--   outputDir   (string) — directory to write the file into (created if missing)
+--   fileName    (string) — default "Master.wav"
+--   startTime   (number) — seconds from project start; default 0
+--   endTime     (number) — seconds from project start; default: project length
+--   sampleRate  (number) — default: project sample rate, falls back to 44100
+--
+-- Returns:
+--   { filePath, startTime, endTime, sampleRate, channelCount }
+-- =============================================================================
+
+function handlers.render_master_to_file(params)
+  if not params.outputDir or params.outputDir == "" then
+    return nil, "Missing required param: outputDir"
+  end
+
+  local start_time, end_time = default_render_bounds(params)
+  if end_time <= start_time then
+    return nil, "endTime must be greater than startTime"
+  end
+  local sample_rate = default_sample_rate(params)
+  local output_dir = ensure_output_dir(params.outputDir)
+
+  local file_name = params.fileName
+  if not file_name or file_name == "" then file_name = "Master.wav" end
+  local base_name = sanitize_filename(file_name:match("^(.+)%.[wW][aA][vV]$") or file_name)
+  local file_path = output_dir .. base_name .. ".wav"
+
+  local ok, err = with_render_settings(sample_rate, start_time, end_time, function(_)
+    reaper.GetSetProjectInfo_String(0, "RENDER_FILE",    output_dir, true)
+    reaper.GetSetProjectInfo_String(0, "RENDER_PATTERN", base_name,  true)
+    -- 0 = master mix — with_render_settings already cleared all solo states,
+    -- so this always captures every track regardless of the session's UI state.
+    reaper.GetSetProjectInfo(0, "RENDER_SETTINGS", 0, true)
+    reaper.Main_OnCommand(42230, 0)
+  end)
+
+  if not ok then
+    return nil, "Render failed: " .. tostring(err)
+  end
+
+  local f = io.open(file_path, "rb")
+  if not f then
+    return nil, "Render produced no output file at: " .. file_path
+  end
+  f:close()
+
+  return {
+    filePath     = file_path,
+    startTime    = start_time,
+    endTime      = end_time,
+    sampleRate   = sample_rate,
+    channelCount = 2,
+  }
+end
+
+-- =============================================================================
 -- Bridge diagnostics handler
 -- =============================================================================
 

@@ -440,6 +440,36 @@ export interface RenderTrackToWavResult {
   channelCount: number;
 }
 
+// --- Rendering & bounce response types ---
+
+export interface RenderedStemFile {
+  trackIndex: number;
+  trackName: string;
+  filePath: string;
+}
+
+export interface RenderFailedStem {
+  trackIndex: number;
+  error: string;
+}
+
+export interface RenderTracksToFilesResult {
+  outputDir: string;
+  rendered: RenderedStemFile[];
+  failed: RenderFailedStem[];
+  startTime: number;
+  endTime: number;
+  sampleRate: number;
+}
+
+export interface RenderMasterToFileResult {
+  filePath: string;
+  startTime: number;
+  endTime: number;
+  sampleRate: number;
+  channelCount: number;
+}
+
 export interface AestheticsResult {
   trackIndex: number;
   trackName: string;

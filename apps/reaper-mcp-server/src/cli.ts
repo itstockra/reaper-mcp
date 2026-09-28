@@ -190,6 +190,9 @@ export const MCP_TOOL_NAMES = [
   'analyze_track_aesthetics',
   // Note: 'render_track_to_wav' is an internal Lua bridge command, NOT a public MCP tool.
   // It must NOT be listed here — MCP_TOOL_NAMES drives the Claude Code allowlist.
+  // rendering & bounce (headless — no render dialog, no human interaction)
+  'render_tracks_to_files',
+  'render_master_to_file',
 ] as const;
 
 /** Create or update .claude/settings.json with reaper MCP tool permissions */
