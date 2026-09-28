@@ -604,6 +604,41 @@ Then in REAPER:
 
 If existing tools (like `get_project_info`) work but new tools fail or timeout, this is almost always because the Lua bridge needs to be updated and reloaded.
 
+### Updating a Non-Linked Install (npm/global CLI)
+
+If your `reaper-mcp` command comes from a plain global npm install (e.g.
+`npm install -g @mthines/reaper-mcp`) rather than `pnpm link --global` from
+this clone — check with `Get-Command reaper-mcp` (PowerShell) or
+`which reaper-mcp` — editing this repo won't affect what actually runs until
+you redeploy manually:
+
+```bash
+pnpm nx build reaper-mcp-server
+```
+
+Then copy the two files that actually run into your global install and into
+REAPER:
+
+```bash
+# Resolve your global install's directory first, e.g. via Get-Command/which —
+# it's wherever node_modules/@mthines/reaper-mcp lives.
+cp dist/apps/reaper-mcp-server/main.js  "<global-install>/node_modules/@mthines/reaper-mcp/main.js"
+cp reaper/mcp_bridge.lua                "$REAPER_RESOURCE_PATH/Scripts/mcp_bridge.lua"
+
+# Also update the npm package's own bundled reaper/ copy — otherwise a future
+# `reaper-mcp setup` will silently revert REAPER's Scripts folder to the old bridge:
+cp reaper/mcp_bridge.lua "<global-install>/node_modules/@mthines/reaper-mcp/reaper/mcp_bridge.lua"
+```
+
+Then:
+
+1. Restart/reconnect the REAPER MCP server in Claude Code — it fetches the
+   tool list once at connect time, so new tools won't appear until then.
+2. Reload `mcp_bridge.lua` in REAPER: Actions > Running Scripts > stop it,
+   then Load ReaScript > select it > Run (or just reopen REAPER).
+
+Commit and push from this repo as usual once you've verified the update works.
+
 ## Development
 
 ```bash

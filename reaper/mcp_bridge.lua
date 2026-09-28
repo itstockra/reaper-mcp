@@ -173,6 +173,31 @@ local function json_decode_array(input)
   return nil
 end
 
+-- Parse a JSON array of plain numbers (e.g. "[20,1]"). Accepts either a Lua
+-- table (already parsed by CF_Json_Parse) or a JSON string. json_decode_array
+-- only handles arrays of {...} objects — its string fallback finds zero
+-- matches for a bare numeric array, so this is a separate helper.
+local function json_decode_number_array(input)
+  if type(input) == "table" then return input end
+  if type(input) ~= "string" then return nil end
+
+  if reaper.CF_Json_Parse then
+    local ok, val = reaper.CF_Json_Parse(input)
+    if ok then return val end
+  end
+
+  -- Fallback: parse a flat JSON array of numbers, e.g. "[20, 1, 3]"
+  local inner = input:match("^%s*%[(.-)%]%s*$")
+  if not inner then return nil end
+  local arr = {}
+  for num_str in inner:gmatch("[%-%d%.eE+]+") do
+    local n = tonumber(num_str)
+    if n then arr[#arr + 1] = n end
+  end
+  if #arr > 0 then return arr end
+  return nil
+end
+
 local function json_encode(obj)
   -- Simple JSON encoder for our response objects
   local parts = {}
@@ -3897,6 +3922,36 @@ local function ensure_output_dir(dir)
   return dir
 end
 
+-- Main_OnCommand(42230) returns to the script slightly before REAPER's render
+-- engine has actually finished flushing the output file to disk. Rendering
+-- multiple tracks back-to-back in one handler call (render_tracks_to_files)
+-- must not mutate solo state for the next track until the previous track's
+-- file has genuinely finished writing — otherwise the still-in-flight render
+-- can be corrupted (observed as a silent file) by the next iteration's solo
+-- change. Polls the file size until it's stable across two checks.
+local function wait_for_file_stable(path, timeout_seconds)
+  local deadline = reaper.time_precise() + timeout_seconds
+  local last_size = -1
+  local stable_checks = 0
+  while reaper.time_precise() < deadline do
+    local f = io.open(path, "rb")
+    if f then
+      local size = f:seek("end")
+      f:close()
+      if size > 0 and size == last_size then
+        stable_checks = stable_checks + 1
+        if stable_checks >= 2 then return true end
+      else
+        stable_checks = 0
+      end
+      last_size = size
+    end
+    local next_check = reaper.time_precise() + 0.05
+    while reaper.time_precise() < next_check do end
+  end
+  return false
+end
+
 -- =============================================================================
 -- render_tracks_to_files handler
 --
@@ -3923,10 +3978,14 @@ function handlers.render_tracks_to_files(params)
 
   local track_count_all = reaper.CountTracks(0)
   local indices
-  if params.trackIndices then
-    indices = json_decode_array(params.trackIndices)
-  end
-  if not indices or #indices == 0 then
+  if params.trackIndices ~= nil then
+    -- trackIndices was explicitly provided — a parse failure here must be a
+    -- loud error, not a silent fall-through to "render every track."
+    indices = json_decode_number_array(params.trackIndices)
+    if not indices or #indices == 0 then
+      return nil, "Failed to parse trackIndices array. Expected a JSON array of zero-based track index numbers, e.g. [0, 2, 5]."
+    end
+  else
     indices = {}
     for i = 0, track_count_all - 1 do indices[#indices + 1] = i end
   end
@@ -3973,6 +4032,10 @@ function handlers.render_tracks_to_files(params)
         -- Action 42230 = "Render project, using the most recent render
         -- settings, auto-close render dialog" — synchronous, blocks ~0.5-1s.
         reaper.Main_OnCommand(42230, 0)
+
+        -- Don't touch solo state for the next track until this file has
+        -- genuinely finished writing (see wait_for_file_stable above).
+        wait_for_file_stable(file_path, 10)
 
         local f = io.open(file_path, "rb")
         if f then
